@@ -27,9 +27,7 @@ def get_supported_tuners():
 
 @dataclass
 class CompatArguments:
-    #
     ckpt_dir: Optional[str] = None
-    load_dataset_config: Optional[bool] = None
     lora_modules: List[str] = field(default_factory=list)
 
     def _handle_ckpt_dir(self: 'BaseArguments'):
@@ -43,8 +41,6 @@ class CompatArguments:
         else:
             self.model = self.ckpt_dir
         self.ckpt_dir = None
-        logger.warning('The `--ckpt_dir` parameter will be removed in `ms-swift>=3.4`. '
-                       'Please use `--model`, `--adapters`.')
 
     def __post_init__(self: 'BaseArguments'):
         if self.ckpt_dir is not None:
@@ -52,8 +48,6 @@ class CompatArguments:
 
         if len(self.lora_modules) > 0:
             self.adapters += self.lora_modules
-            logger.warning('The `--lora_modules` parameter will be removed in `ms-swift>=3.4`. '
-                           'Please use `--adapters`.')
 
 
 @dataclass
@@ -90,6 +84,8 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
     hub_token: Optional[str] = field(
         default=None, metadata={'help': 'SDK token can be found in https://modelscope.cn/my/myaccesstoken'})
     custom_register_path: List[str] = field(default_factory=list)  # .py
+    ddp_timeout: int = 18000000
+    ddp_backend: Optional[str] = None
 
     # extra
     ignore_args_error: bool = False  # True: notebook compatibility
@@ -131,9 +127,6 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
         self.adapters = [
             safe_snapshot_download(adapter, use_hf=self.use_hf, hub_token=self.hub_token) for adapter in self.adapters
         ]
-        for adapter in self.adapters:
-            assert self._check_is_adapter(adapter), (
-                f'`{adapter}` is not an adapter, please try using `--model` to pass it.')
 
     def __post_init__(self):
         if self.use_hf or use_hf_hub():
@@ -149,6 +142,10 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
         self.rank, self.local_rank, self.global_world_size, self.local_world_size = get_dist_setting()
         logger.info(f'rank: {self.rank}, local_rank: {self.local_rank}, '
                     f'world_size: {self.global_world_size}, local_world_size: {self.local_world_size}')
+        if self.train_type not in extra_tuners:
+            for adapter in self.adapters:
+                assert self._check_is_adapter(adapter), (
+                    f'`{adapter}` is not an adapter, please try using `--model` to pass it.')
         ModelArguments.__post_init__(self)
         QuantizeArguments.__post_init__(self)
         TemplateArguments.__post_init__(self)
@@ -217,7 +214,6 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
             'model_author',
             'split_dataset_ratio',
             # template_args
-            'tools_prompt',
             'use_chat_template',
         ]
         skip_keys = list(f.name for f in fields(GenerationArguments) + fields(CompatArguments)) + ['adapters']
@@ -247,10 +243,10 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
         if is_dist():
             set_device()
 
-    def get_template(self, processor: 'Processor') -> 'Template':
+    def get_template(self, processor: 'Processor', template_type: Optional[str] = None) -> 'Template':
         template_kwargs = self.get_template_kwargs()
-        template = get_template(self.template, processor, **template_kwargs)
-        logger.info(f'default_system: {template.template_meta.default_system}')
+        template_type = template_type or self.template
+        template = get_template(template_type, processor, **template_kwargs)
         return template
 
     def get_model_processor(self,

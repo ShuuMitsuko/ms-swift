@@ -52,6 +52,8 @@ The source code for the loss functions can be found [here](https://github.com/mo
 {"query": "sentence1", "response": "<image>sentence2", "images": ["/some/images1.jpg"], "label": 0.7}
 ```
 
+The eval metrics are the Pearson and Spearman's Rank Correlation Coefficient of the embeddings' euclidean distance/dot production and so on, totally 8 values.
+
 ### Format for Contrastive/Online Contrastive Loss
 
 ```json lines
@@ -76,11 +78,16 @@ InfoNCE loss supports the following environment variables:
 1. `INFONCE_TEMPERATURE`: The temperature parameter. If not set, the default value is 0.01.
 2. `INFONCE_USE_BATCH`: Determines whether to use `rejected_response` within the sample (hard negative samples) or to use all `responses` within a batch. The default is `True`, which means using responses within the batch.
 3. `INFONCE_HARD_NEGATIVES`: The number of hard negatives. If not set, all samples in `rejected_response` will be used. Since the lengths may not be consistent, a for loop will be used to compute the loss (which is slower). If set to a specific number, and there are not enough samples, the missing number will be randomly sampled. If there are excess samples, the first `INFONCE_HARD_NEGATIVES` will be selected.
+4. `INFONCE_MASK_FAKE_NEGATIVE`: Masks out fake negatives. The default is set to False. When enabled, it checks if a sample's similarity is greater than the positive sample's similarity plus 0.1. If so, the sample's similarity is set to -inf to prevent the leakage of the positive sample.
 
 > It is also possible to set the number of hard negatives to be equal in the dataset, so that even if not set, the for loop method will not be used, thereby speeding up computation.
 >
 > `rejected_response` can also be omitted. In this case, `INFONCE_USE_BATCH` remains `True` and will use other samples within the batch as rejected responses.
 
+The evaluation of InfoNCE loss includes the following metrics:
+- mean_neg: The average of all hard negatives
+- mean_pos: The average of all positives
+- margin: The average of (positive - max hard negative)
 
 ## Scaffolding
 

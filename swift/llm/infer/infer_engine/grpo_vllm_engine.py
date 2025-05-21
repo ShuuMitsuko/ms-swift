@@ -49,11 +49,11 @@ class GRPOVllmEngine(VllmEngine):
         max_loras: int = 1,
         max_lora_rank: int = 16,
         enable_prefix_caching: bool = False,
-        num_infer_workers: int = 1,
         enable_sleep_mode: bool = False,
         distributed_executor_backend: Optional[str] = None,
         engine_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
+        os.environ['VLLM_USE_V1'] = os.environ.get('VLLM_USE_V1', '0')
         patch_vllm_memory_leak()
         self.use_async_engine = use_async_engine
         self.processor = get_model_tokenizer(
@@ -96,6 +96,10 @@ class GRPOVllmEngine(VllmEngine):
     @property
     def inner_model(self):
         return self.engine.llm_engine.model_executor.driver_worker.model_runner.model
+
+    @property
+    def inner_model_executor(self):
+        return self.engine.llm_engine.model_executor
 
     def infer(
         self,

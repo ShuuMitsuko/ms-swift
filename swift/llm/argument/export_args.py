@@ -47,6 +47,7 @@ class ExportArguments(MergeArguments, BaseArguments):
     to_mcore: bool = False
     to_hf: bool = False
     mcore_model: Optional[str] = None
+    thread_count: Optional[int] = None
     test_convert_precision: bool = False
 
     # push to ms hub
@@ -98,7 +99,7 @@ class ExportArguments(MergeArguments, BaseArguments):
             self.mcore_model = to_abspath(self.mcore_model, check_path_exist=True)
             if not dist.is_initialized():
                 set_default_ddp_config()
-                init_process_group()
+                init_process_group(backend=self.ddp_backend, timeout=self.ddp_timeout)
 
         BaseArguments.__post_init__(self)
         self._init_output_dir()

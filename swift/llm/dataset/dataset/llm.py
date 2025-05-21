@@ -334,9 +334,40 @@ class StsbPreprocessor(ResponsePreprocessor):
         return super().preprocess(row)
 
 
+class StsbGeneratePreprocessor(ResponsePreprocessor):
+    prompt = """Task: Based on the given two sentences, provide a similarity score between 0.0 and 1.0.
+Sentence 1: {text1}
+Sentence 2: {text2}
+Similarity score: """
+
+    def preprocess(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        return super().preprocess({
+            'query': self.prompt.format(text1=row['sentence1'], text2=row['sentence2']),
+            'response': f"{row['score']:.1f}"
+        })
+
+
+class StsbRegressionPreprocessor(StsbGeneratePreprocessor):
+
+    def preprocess(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        return super(StsbGeneratePreprocessor, self).preprocess({
+            'query':
+            self.prompt.format(text1=row['sentence1'], text2=row['sentence2']),
+            'label':
+            row['score']
+        })
+
+
 register_dataset(
     DatasetMeta(
-        ms_dataset_id='sentence-transformers/stsb', preprocess_func=StsbPreprocessor(), tags=['similarity', '🔥']))
+        ms_dataset_id='sentence-transformers/stsb',
+        hf_dataset_id='sentence-transformers/stsb',
+        subsets=[
+            SubsetDataset('default', preprocess_func=StsbPreprocessor()),  # embedding
+            SubsetDataset('generate', preprocess_func=StsbGeneratePreprocessor()),
+            SubsetDataset('reg', preprocess_func=StsbRegressionPreprocessor()),
+        ],
+        tags=['similarity', '🔥']))
 
 
 def _repair_conversations_agent_instruct(s: str) -> List[Dict[str, Any]]:
@@ -575,7 +606,17 @@ register_dataset(
         huge_dataset=True))
 
 
-class XlamFunctionCallingPreprocessor(ResponsePreprocessor):
+class XlamFunctionCallingPreprocessor(RowPreprocessor):
+
+    def preprocess(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        messages = [{'role': 'user', 'content': row['query']}]
+        response = row['answers']
+        response = json.loads(response)
+        messages += [{'role': 'tool_call', 'content': json.dumps(content)} for content in response]
+        return {'messages': messages, 'tools': row['tools']}
+
+
+class XlamFunctionCallingGRPOPreprocessor(ResponsePreprocessor):
 
     def preprocess(self, row: Dict[str, Any]) -> Dict[str, Any]:
         query = row['query']
@@ -593,9 +634,12 @@ class XlamFunctionCallingPreprocessor(ResponsePreprocessor):
 register_dataset(
     DatasetMeta(
         ms_dataset_id='LLM-Research/xlam-function-calling-60k',
-        subsets=['dataset'],
-        preprocess_func=XlamFunctionCallingPreprocessor(),
-        tags=['agent']))
+        hf_dataset_id='Salesforce/xlam-function-calling-60k',
+        subsets=[
+            SubsetDataset('default', 'dataset', preprocess_func=XlamFunctionCallingPreprocessor()),
+            SubsetDataset('grpo', 'dataset', preprocess_func=XlamFunctionCallingGRPOPreprocessor())
+        ],
+        tags=['agent', 'grpo', '🔥']))
 
 
 class HHRLHFCNPreprocessor(MessagesPreprocessor):
@@ -703,6 +747,27 @@ register_dataset(
         tags=['chat', 'zh']))
 
 
+class FunctionCallChatmlPreprocessor(MessagesPreprocessor):
+
+    def preprocess(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        res = super().preprocess(row)
+
+        if res['function_description']:
+            res['tools'] = res['function_description'].split('\n\n')
+        messages = res['messages']
+        if messages[0]['role'] == 'system':
+            messages.pop(0)
+        return res
+
+
+register_dataset(
+    DatasetMeta(
+        ms_dataset_id='AI-ModelScope/function-calling-chatml',
+        hf_dataset_id='Locutusque/function-calling-chatml',
+        preprocess_func=FunctionCallChatmlPreprocessor(),
+        tags=['agent', 'en', 'sft', '🔥']))
+
+
 class Dolly15kPreprocessor(RowPreprocessor):
 
     def preprocess(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -777,9 +842,28 @@ class SelfCognitionPreprocessor(ResponsePreprocessor):
         return super().preprocess(row)
 
 
+class Qwen3SelfCognitionPreprocessor(SelfCognitionPreprocessor):
+
+    def preprocess(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        row['query'] = row['query'] + ' /no_think'
+        row['response'] = '<think>\n\n</think>\n\n' + row['response']
+        return super().preprocess(row)
+
+
+class EmptyThinkSelfCognitionPreprocessor(SelfCognitionPreprocessor):
+
+    def preprocess(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        row['response'] = '<think>\n\n</think>\n\n' + row['response']
+        return super().preprocess(row)
+
+
 register_dataset(
     DatasetMeta(
         ms_dataset_id='swift/self-cognition',
         hf_dataset_id='modelscope/self-cognition',
-        preprocess_func=SelfCognitionPreprocessor(),
+        subsets=[
+            SubsetDataset(preprocess_func=SelfCognitionPreprocessor()),
+            SubsetDataset('qwen3', preprocess_func=Qwen3SelfCognitionPreprocessor()),
+            SubsetDataset('empty_think', preprocess_func=EmptyThinkSelfCognitionPreprocessor()),
+        ],
         tags=['chat', 'self-cognition', '🔥']))

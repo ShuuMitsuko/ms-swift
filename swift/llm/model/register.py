@@ -8,6 +8,8 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import torch
+import transformers
+from packaging import version
 from peft import PeftModel
 from transformers import (AutoConfig, AutoModel, AutoModelForCausalLM, AutoModelForSequenceClassification,
                           AutoTokenizer, GenerationConfig, PretrainedConfig, PreTrainedModel, PreTrainedTokenizerBase)
@@ -19,8 +21,8 @@ from transformers.utils.versions import require_version
 from swift.utils import get_dist_setting, get_logger, is_mp, is_unsloth_available, patch_getattr, use_torchacc
 from .constant import ModelType
 from .patcher import (patch_automodel, patch_automodel_for_sequence_classification, patch_get_dynamic_module,
-                      patch_mp_ddp)
-from .utils import AttnImpl, HfConfigFactory, ModelInfo, safe_snapshot_download
+                      patch_mp_ddp, patch_tp_plan)
+from .utils import AttnImpl, HfConfigFactory, InitModelStrategy, ModelInfo, safe_snapshot_download
 
 GetModelTokenizerFunction = Callable[..., Tuple[Optional[PreTrainedModel], PreTrainedTokenizerBase]]
 logger = get_logger()
@@ -70,7 +72,7 @@ class ModelMeta:
     task_type: Optional[str] = None
 
     # File patterns to ignore when downloading the model.
-    ignore_patterns: List[str] = field(default_factory=list)
+    ignore_patterns: Optional[List[str]] = None
     # Usually specifies the version limits of transformers.
     requires: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
@@ -140,7 +142,9 @@ def load_by_unsloth(args):
         model_name=args.adapters and args.adapters[0] or args.model_dir,
         dtype=args.torch_dtype,
         max_seq_length=args.max_length,
+        full_finetuning=args.quant_bits is None,
         load_in_4bit=args.quant_bits == 4,
+        load_in_8bit=args.quant_bits == 8,
     )
     if isinstance(model, PeftModel):
         base_model = model.model
@@ -152,6 +156,28 @@ def load_by_unsloth(args):
     processor.model_info = model_info
     processor.model_meta = model_meta
     return model, processor
+
+
+def _patch_awq_compat(model_info):
+    if version.parse(transformers.__version__) < version.parse('4.50') or model_info.quant_method != 'awq':
+        return
+
+    try:
+        # compat transformers>=4.50 (autoawq)
+        from transformers.quantizers.quantizer_awq import AwqQuantizer
+        from transformers.integrations import get_keys_to_not_convert
+        _process_model_before_weight_loading = AwqQuantizer._process_model_before_weight_loading
+
+        def _new_process_model_before_weight_loading(self, model, *args, **kwargs):
+            modules_to_not_convert = self.quantization_config.modules_to_not_convert
+            if modules_to_not_convert is not None:
+                self.quantization_config.modules_to_not_convert = list(
+                    modules_to_not_convert) + get_keys_to_not_convert(model)
+            return _process_model_before_weight_loading(self, model, *args, **kwargs)
+
+        AwqQuantizer._process_model_before_weight_loading = _new_process_model_before_weight_loading
+    except Exception:
+        pass
 
 
 def get_model_tokenizer_from_local(model_dir: str,
@@ -171,25 +197,25 @@ def get_model_tokenizer_from_local(model_dir: str,
         model_config.keys_to_ignore_at_inference = []
     if 'past_key_values' not in model_config.keys_to_ignore_at_inference:
         model_config.keys_to_ignore_at_inference.append('past_key_values')
-    model_info.config = model_config
 
     torch_dtype = model_info.torch_dtype
     model_config.torch_dtype = torch_dtype
     HfConfigFactory.compat_zero3(model_config)
     rope_scaling = kwargs.get('rope_scaling')
-    if rope_scaling is not None:
+    if rope_scaling:
         HfConfigFactory.set_config_attr(model_config, 'rope_scaling', rope_scaling)
 
     if tokenizer is None:
         tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
 
     num_labels = model_info.num_labels or getattr(model_config, 'num_labels', None)
-    if num_labels and model_info.task_type != 'causal_lm':
+    if num_labels and model_info.task_type == 'seq_cls':
         model_info.num_labels = num_labels
         model_config.num_labels = num_labels
 
     model = None
     if load_model:
+        _patch_awq_compat(model_info)
         logger.info(f'model_kwargs: {model_kwargs}')
         # fix seq_cls
         if model_info.task_type == 'seq_cls' and automodel_class is None:
@@ -199,19 +225,16 @@ def get_model_tokenizer_from_local(model_dir: str,
             except ValueError:
                 model = None
 
-        if model_info.task_type == 'embedding' and automodel_class is None:
-            try:
-                model = AutoModel.from_pretrained(
-                    model_dir, config=model_config, torch_dtype=torch_dtype, trust_remote_code=True, **model_kwargs)
-                from swift.llm.model.patcher import patch_output_normalizer
-                patch_output_normalizer(model)
-            except ValueError:
-                model = None
-
         automodel_class = automodel_class or AutoModelForCausalLM
+        model_meta = kwargs['model_meta']
         if model is None:
-            if model_info.task_type == 'seq_cls':
-                context = partial(patch_automodel_for_sequence_classification, model_meta=kwargs['model_meta'])
+            if model_info.task_type == 'seq_cls' and not model_meta.is_reward:
+                context = partial(patch_automodel_for_sequence_classification, model_meta=model_meta)
+            elif model_info.task_type == 'seq_cls' and model_meta.is_reward and model_config.num_labels > 1:
+                logger.warning('You are using a reward model for seq_cls task and num_labels > 1, '
+                               'ignore_mismatched_sizes will be set to True')
+                model_kwargs['ignore_mismatched_sizes'] = True
+                context = partial(patch_automodel_for_sequence_classification, model_meta=model_meta)
             else:
                 context = partial(patch_automodel, automodel_class=automodel_class, model_info=model_info)
             with context():
@@ -223,6 +246,20 @@ def get_model_tokenizer_from_local(model_dir: str,
         has_remote_code = hasattr(model_config, 'auto_map') and automodel_class.__name__ in model_config.auto_map
         if has_remote_code and model._auto_class is None:
             model._auto_class = automodel_class.__name__
+
+        if model_info.task_type == 'embedding' and automodel_class.__name__ != 'AutoModel':
+            from swift.llm.model.patcher import patch_output_normalizer
+            patch_output_normalizer(model, model_meta=model_meta)
+
+        init_strategy = kwargs.get('init_strategy')
+        if init_strategy is not None:
+            InitModelStrategy.init_parameters(model, init_strategy)
+
+    model_info.config = model_config if model is None else model.config
+    if model:
+        # fix seq classification task
+        pad_token_id = model.config.pad_token_id or tokenizer.pad_token_id
+        HfConfigFactory.set_model_config_attr(model, 'pad_token_id', pad_token_id)
     return model, tokenizer
 
 
@@ -271,14 +308,11 @@ def get_default_device_map():
     if local_rank == -1:
         local_rank = 0
     if is_torch_npu_available():
-        return f'npu:{local_rank}'
+        return 'auto' if is_mp() else f'npu:{local_rank}'
     elif is_torch_mps_available():
         return f'mps:{local_rank}'
     elif is_torch_cuda_available():
-        if is_mp():
-            return 'auto'
-        else:
-            return f'cuda:{local_rank}'
+        return 'auto' if is_mp() else f'cuda:{local_rank}'
     else:
         return 'cpu'
 
@@ -380,18 +414,21 @@ def _read_args_json_model_type(model_dir):
 
 
 def _get_model_info(model_dir: str, model_type: Optional[str], quantization_config) -> ModelInfo:
-    config_dict = PretrainedConfig.get_config_dict(model_dir)[0]
+    try:
+        config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
+    except Exception:
+        config = PretrainedConfig.get_config_dict(model_dir)[0]
     if quantization_config is not None:
-        config_dict['quantization_config'] = quantization_config
-    quant_info = HfConfigFactory.get_quant_info(config_dict) or {}
-    torch_dtype = HfConfigFactory.get_torch_dtype(config_dict, quant_info)
-    max_model_len = HfConfigFactory.get_max_model_len(config_dict)
-    rope_scaling = HfConfigFactory.get_config_attr(config_dict, 'rope_scaling')
+        HfConfigFactory.set_config_attr(config, 'quantization_config', quantization_config)
+    quant_info = HfConfigFactory.get_quant_info(config) or {}
+    torch_dtype = HfConfigFactory.get_torch_dtype(config, quant_info)
+    max_model_len = HfConfigFactory.get_max_model_len(config)
+    rope_scaling = HfConfigFactory.get_config_attr(config, 'rope_scaling')
 
     if model_type is None:
         model_type = _read_args_json_model_type(model_dir)
     if model_type is None:
-        architectures = HfConfigFactory.get_config_attr(config_dict, 'architectures')
+        architectures = HfConfigFactory.get_config_attr(config, 'architectures')
         model_types = get_matched_model_types(architectures)
         if len(model_types) > 1:
             raise ValueError('Please explicitly pass the model_type. For reference, '
@@ -534,7 +571,7 @@ def get_model_tokenizer(
     kwargs['attn_impl'] = attn_impl
     kwargs['rope_scaling'] = rope_scaling
     kwargs['model_meta'] = model_meta
-    with patch_get_dynamic_module():
+    with patch_get_dynamic_module(), patch_tp_plan():
         model, processor = get_function(model_dir, model_info, model_kwargs, load_model, **kwargs)
 
     if not isinstance(processor, PreTrainedTokenizerBase) and hasattr(processor, 'tokenizer'):
@@ -542,6 +579,11 @@ def get_model_tokenizer(
         patch_getattr(processor.__class__, 'tokenizer')
     else:
         tokenizer = processor
+    problem_type = kwargs.get('problem_type')
+    if problem_type is None and model_info.num_labels == 1:
+        problem_type = 'regression'
+    if problem_type is not None:
+        model_info.config.problem_type = problem_type
     tokenizer.model_info = model_info
     tokenizer.model_meta = model_meta
 
@@ -556,9 +598,6 @@ def get_model_tokenizer(
     assert tokenizer.pad_token_id is not None
 
     if model is not None:
-        # fix seq classification task
-        pad_token_id = model.config.pad_token_id or tokenizer.pad_token_id
-        HfConfigFactory.set_model_config_attr(model, 'pad_token_id', pad_token_id)
         model.model_info = model_info
         model.model_meta = model_meta
         model.model_dir = model_dir

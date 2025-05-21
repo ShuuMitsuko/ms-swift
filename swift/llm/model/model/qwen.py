@@ -1,4 +1,5 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
+import os
 from typing import Any, Dict, Optional, Tuple, Type
 
 import torch
@@ -487,20 +488,85 @@ register_model(
         get_model_tokenizer_with_flash_attn,
         architectures=['Qwen2MoeForCausalLM'],
         requires=['transformers>=4.40'],
+    ))
+
+register_model(
+    ModelMeta(
+        LLMModelType.qwen3,
+        [
+            ModelGroup([
+                Model('Qwen/Qwen3-0.6B-Base', 'Qwen/Qwen3-0.6B-Base'),
+                Model('Qwen/Qwen3-1.7B-Base', 'Qwen/Qwen3-1.7B-Base'),
+                Model('Qwen/Qwen3-4B-Base', 'Qwen/Qwen3-4B-Base'),
+                Model('Qwen/Qwen3-8B-Base', 'Qwen/Qwen3-8B-Base'),
+                Model('Qwen/Qwen3-14B-Base', 'Qwen/Qwen3-14B-Base'),
+                Model('Qwen/Qwen3-32B-Base', 'Qwen/Qwen3-32B-Base'),
+                # instruct
+                Model('Qwen/Qwen3-0.6B', 'Qwen/Qwen3-0.6B'),
+                Model('Qwen/Qwen3-1.7B', 'Qwen/Qwen3-1.7B'),
+                Model('Qwen/Qwen3-4B', 'Qwen/Qwen3-4B'),
+                Model('Qwen/Qwen3-8B', 'Qwen/Qwen3-8B'),
+                Model('Qwen/Qwen3-14B', 'Qwen/Qwen3-14B'),
+                Model('Qwen/Qwen3-32B', 'Qwen/Qwen3-32B'),
+                # fp8
+                Model('Qwen/Qwen3-0.6B-FP8', 'Qwen/Qwen3-0.6B-FP8'),
+                Model('Qwen/Qwen3-1.7B-FP8', 'Qwen/Qwen3-1.7B-FP8'),
+                Model('Qwen/Qwen3-4B-FP8', 'Qwen/Qwen3-4B-FP8'),
+                Model('Qwen/Qwen3-8B-FP8', 'Qwen/Qwen3-8B-FP8'),
+                Model('Qwen/Qwen3-14B-FP8', 'Qwen/Qwen3-14B-FP8'),
+                Model('Qwen/Qwen3-32B-FP8', 'Qwen/Qwen3-32B-FP8'),
+                # awq
+                Model('Qwen/Qwen3-4B-AWQ', 'Qwen/Qwen3-4B-AWQ'),
+                Model('Qwen/Qwen3-8B-AWQ', 'Qwen/Qwen3-8B-AWQ'),
+                Model('Qwen/Qwen3-14B-AWQ', 'Qwen/Qwen3-14B-AWQ'),
+                Model('Qwen/Qwen3-32B-AWQ', 'Qwen/Qwen3-32B-AWQ'),
+                # swift
+                Model('swift/Qwen3-32B-AWQ'),
+            ]),
+        ],
+        TemplateType.qwen3,
+        get_model_tokenizer_with_flash_attn,
+        architectures=['Qwen3ForCausalLM'],
+        requires=['transformers>=4.51'],
         model_arch=ModelArch.llama))
 
+register_model(
+    ModelMeta(
+        LLMModelType.qwen3_moe,
+        [
+            ModelGroup([
+                Model('Qwen/Qwen3-30B-A3B-Base', 'Qwen/Qwen3-30B-A3B-Base'),
+                Model('Qwen/Qwen3-235B-A22B-Base', 'Qwen/Qwen3-235B-A22B-Base'),
+                # instruct
+                Model('Qwen/Qwen3-30B-A3B', 'Qwen/Qwen3-30B-A3B'),
+                Model('Qwen/Qwen3-235B-A22B', 'Qwen/Qwen3-235B-A22B'),
+                # fp8
+                Model('Qwen/Qwen3-30B-A3B-FP8', 'Qwen/Qwen3-30B-A3B-FP8'),
+                Model('Qwen/Qwen3-235B-A22B-FP8', 'Qwen/Qwen3-235B-A22B-FP8'),
+                # awq
+                Model('swift/Qwen3-30B-A3B-AWQ', 'cognitivecomputations/Qwen3-30B-A3B-AWQ'),
+                Model('swift/Qwen3-235B-A22B-AWQ', 'cognitivecomputations/Qwen3-235B-A22B-AWQ'),
+            ]),
+        ],
+        TemplateType.qwen3,
+        get_model_tokenizer_with_flash_attn,
+        architectures=['Qwen3MoeForCausalLM'],
+        requires=['transformers>=4.51'],
+    ))
 
-def patch_qwen_vl_utils():
-    from qwen_vl_utils import vision_process
+
+def patch_qwen_vl_utils(vision_process):
     if hasattr(vision_process, '_patch'):
         return
+    if os.getenv('VIDEO_MAX_PIXELS') and not os.getenv('VIDEO_TOTAL_PIXELS'):
+        # https://github.com/QwenLM/Qwen2.5-VL/issues/1120
+        os.environ['VIDEO_TOTAL_PIXELS'] = str(int(128000 * 28 * 28 * 0.9))
     for key in [
             'image_factor', 'min_pixels', 'max_pixels', 'max_ratio', 'video_min_pixels', 'video_max_pixels',
             'video_total_pixels', 'frame_factor', 'fps', 'fps_min_frames', 'fps_max_frames'
     ]:
         type_func = float if key == 'fps' else int
         setattr(vision_process, key.upper(), get_env_args(key, type_func, getattr(vision_process, key.upper())))
-    from qwen_vl_utils import vision_process
     _read_video_decord = vision_process._read_video_decord
 
     def _new_read_video_decord(ele: dict):
@@ -520,7 +586,8 @@ def get_model_tokenizer_qwen2_vl(*args, **kwargs):
         patch_output_clone(model.model.embed_tokens)
         patch_output_to_input_device(model.model.embed_tokens)
 
-    patch_qwen_vl_utils()
+    from qwen_vl_utils import vision_process
+    patch_qwen_vl_utils(vision_process)
     return model, tokenizer
 
 
@@ -596,11 +663,13 @@ register_model(
             ModelGroup([
                 Model('Qwen/Qwen2.5-VL-3B-Instruct', 'Qwen/Qwen2.5-VL-3B-Instruct'),
                 Model('Qwen/Qwen2.5-VL-7B-Instruct', 'Qwen/Qwen2.5-VL-7B-Instruct'),
+                Model('Qwen/Qwen2.5-VL-32B-Instruct', 'Qwen/Qwen2.5-VL-32B-Instruct'),
                 Model('Qwen/Qwen2.5-VL-72B-Instruct', 'Qwen/Qwen2.5-VL-72B-Instruct'),
             ]),
             ModelGroup([
                 Model('Qwen/Qwen2.5-VL-3B-Instruct-AWQ', 'Qwen/Qwen2.5-VL-3B-Instruct-AWQ'),
                 Model('Qwen/Qwen2.5-VL-7B-Instruct-AWQ', 'Qwen/Qwen2.5-VL-7B-Instruct-AWQ'),
+                Model('Qwen/Qwen2.5-VL-32B-Instruct-AWQ', 'Qwen/Qwen2.5-VL-32B-Instruct-AWQ'),
                 Model('Qwen/Qwen2.5-VL-72B-Instruct-AWQ', 'Qwen/Qwen2.5-VL-72B-Instruct-AWQ'),
             ]),
         ],
@@ -610,6 +679,43 @@ register_model(
         architectures=['Qwen2_5_VLForConditionalGeneration'],
         requires=['transformers>=4.49', 'qwen_vl_utils>=0.0.6', 'decord'],
         tags=['vision', 'video']))
+
+
+def get_model_tokenizer_qwen2_5_omni(model_dir, *args, **kwargs):
+    from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor, Qwen2_5OmniConfig
+    from qwen_omni_utils import vision_process
+    kwargs['automodel_class'] = kwargs['automodel_class'] or Qwen2_5OmniForConditionalGeneration
+    processor = Qwen2_5OmniProcessor.from_pretrained(model_dir, trust_remote_code=True)
+    kwargs['tokenizer'] = processor.tokenizer
+    kwargs['model_config'] = Qwen2_5OmniConfig.from_pretrained(model_dir, trust_remote_code=True)
+    patch_qwen_vl_utils(vision_process)
+    kwargs['model_config'].enable_audio_output = get_env_args('ENABLE_AUDIO_OUTPUT', bool, True)
+    model, _ = get_model_tokenizer_with_flash_attn(model_dir, *args, **kwargs)
+    if model:
+        use_submodel_func(model, 'thinker')
+        model.config.keys_to_ignore_at_inference += ['hidden_states', 'attention_mask']
+        model.config.talker_config.pad_token_id = None
+    return model, processor
+
+
+register_model(
+    ModelMeta(
+        MLLMModelType.qwen2_5_omni,
+        [
+            ModelGroup([
+                Model('Qwen/Qwen2.5-Omni-3B', 'Qwen/Qwen2.5-Omni-3B'),
+                Model('Qwen/Qwen2.5-Omni-7B', 'Qwen/Qwen2.5-Omni-7B'),
+            ]),
+        ],
+        TemplateType.qwen2_5_omni,
+        get_model_tokenizer_qwen2_5_omni,
+        model_arch=ModelArch.qwen2_5_omni,
+        architectures=['Qwen2_5OmniModel', 'Qwen2_5OmniForConditionalGeneration'],
+        requires=['transformers>=4.50', 'soundfile', 'qwen_omni_utils', 'decord'],
+        tags=['vision', 'video', 'audio'],
+        additional_saved_files=['spk_dict.pt'],
+        ignore_patterns=[],
+    ))
 
 
 def get_model_tokenizer_qwen2_audio(*args, **kwargs):
@@ -631,7 +737,7 @@ register_model(
         get_model_tokenizer_qwen2_audio,
         model_arch=ModelArch.qwen2_audio,
         architectures=['Qwen2AudioForConditionalGeneration'],
-        requires=['transformers>=4.45', 'librosa'],
+        requires=['transformers>=4.45,<4.49', 'librosa'],
         tags=['audio'],
     ))
 
@@ -670,9 +776,10 @@ register_model(
 def get_model_tokenizer_ovis(*args, **kwargs):
     kwargs['attn_impl_keys'] = ['llm_attn_implementation']
     model, tokenizer = get_model_tokenizer_with_flash_attn(*args, **kwargs)
-    model.visual_tokenizer.to(model.dtype)
-    model.vte.to(model.dtype)
     if model is not None:
+        model.visual_tokenizer.to(model.dtype)
+        model.vte.to(model.dtype)
+
         model.generation_config.cache_implementation = None
         func_list = ['generate', 'forward', 'get_input_embeddings']
         use_submodel_func(model, 'llm', func_list)

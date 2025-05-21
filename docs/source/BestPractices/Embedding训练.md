@@ -63,6 +63,8 @@ loss的源代码可以在[这里](https://github.com/modelscope/ms-swift/blob/ma
 {"query": "<image>sentence1", "response":  "sentence2", "images": "/some/images.jpg", "label": 0}
 ```
 
+评测的指标分别是两个embedding的欧式距离、点积等的pearson系数以及spearman系数，共八个指标。
+
 ### infonce 格式
 
 ```json lines
@@ -77,9 +79,15 @@ infonce loss支持几个环境变量：
 1. INFONCE_TEMPERATURE temperature参数，不设置的话默认值是0.01
 2. INFONCE_USE_BATCH 使用sample内部的rejected_response（hard negative样例）还是使用一个batch的所有responses，默认为True代表使用batch内部的responses
 3. INFONCE_HARD_NEGATIVES hard negatives的数量，如果不设置会使用rejected_response的所有samples，由于长度未必一致，因此会采用for循环计算loss（计算会慢），如果设置为某个数值，则如果不够会对缺失数量进行随机采样，超长会选用前`INFONCE_HARD_NEGATIVES`个
+4. INFONCE_MASK_FAKE_NEGATIVE mask掉假negative。默认为False，开启时会判断positive sample的similarity+0.1，比该值大的sample的similarity会被设置为-inf，防止positive sample泄露问题
 
 > 也可以在数据集中将hard negatives数量设置为数量相等，这样即使不设置也不会使用for循环方式，加快计算速度
 > rejected_response也可以没有，这种情况下INFONCE_USE_BATCH保持为True，会使用一个batch内部的其他samples作为rejected responses
+
+infonce loss的评测会有下面几个指标：
+- mean_neg 所有hard_negative的平均值
+- mean_pos 所有positive的平均值
+- margin positive-max_hard_negative的平均值
 
 ## 脚手架
 

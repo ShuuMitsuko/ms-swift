@@ -108,8 +108,8 @@ def get_model_tokenizer_xcomposer2(model_dir: str,
         CLIPVisionTower.load_model = load_model
 
     model, tokenizer = get_model_tokenizer_with_flash_attn(model_dir, model_info, model_kwargs, load_model, **kwargs)
-    model.vit.vision_tower.gradient_checkpointing_enable()
     if model is not None:
+        model.vit.vision_tower.gradient_checkpointing_enable()
         if version == 'v2' and use_flash_attn:
             # fix AttributeError: no attribute 'attention_dropout'
             model.model.layers[0].attention.__class__.attention_dropout = 0.
@@ -273,6 +273,59 @@ register_model(
         architectures=['InternVLChatModel'],
         model_arch=ModelArch.internvl,
         requires=['transformers>=4.36', 'timm'],
+        tags=['vision', 'video'],
+    ))
+
+register_model(
+    ModelMeta(
+        MLLMModelType.internvl3,
+        [
+            # pretrain
+            ModelGroup([
+                Model('OpenGVLab/InternVL3-1B-Pretrained', 'OpenGVLab/InternVL3-1B-Pretrained'),
+                Model('OpenGVLab/InternVL3-2B-Pretrained', 'OpenGVLab/InternVL3-2B-Pretrained'),
+                Model('OpenGVLab/InternVL3-8B-Pretrained', 'OpenGVLab/InternVL3-8B-Pretrained'),
+                Model('OpenGVLab/InternVL3-9B-Pretrained', 'OpenGVLab/InternVL3-9B-Pretrained'),
+                Model('OpenGVLab/InternVL3-14B-Pretrained', 'OpenGVLab/InternVL3-14B-Pretrained'),
+                Model('OpenGVLab/InternVL3-38B-Pretrained', 'OpenGVLab/InternVL3-38B-Pretrained'),
+                Model('OpenGVLab/InternVL3-78B-Pretrained', 'OpenGVLab/InternVL3-78B-Pretrained'),
+            ]),
+            # instruct
+            ModelGroup([
+                Model('OpenGVLab/InternVL3-1B-Instruct', 'OpenGVLab/InternVL3-1B-Instruct'),
+                Model('OpenGVLab/InternVL3-2B-Instruct', 'OpenGVLab/InternVL3-2B-Instruct'),
+                Model('OpenGVLab/InternVL3-8B-Instruct', 'OpenGVLab/InternVL3-8B-Instruct'),
+                Model('OpenGVLab/InternVL3-9B-Instruct', 'OpenGVLab/InternVL3-9B-Instruct'),
+                Model('OpenGVLab/InternVL3-14B-Instruct', 'OpenGVLab/InternVL3-14B-Instruct'),
+                Model('OpenGVLab/InternVL3-38B-Instruct', 'OpenGVLab/InternVL3-38B-Instruct'),
+                Model('OpenGVLab/InternVL3-78B-Instruct', 'OpenGVLab/InternVL3-78B-Instruct'),
+            ]),
+            # mpo
+            ModelGroup([
+                Model('OpenGVLab/InternVL3-1B', 'OpenGVLab/InternVL3-1B'),
+                Model('OpenGVLab/InternVL3-2B', 'OpenGVLab/InternVL3-2B'),
+                Model('OpenGVLab/InternVL3-8B', 'OpenGVLab/InternVL3-8B'),
+                Model('OpenGVLab/InternVL3-9B', 'OpenGVLab/InternVL3-9B'),
+                Model('OpenGVLab/InternVL3-14B', 'OpenGVLab/InternVL3-14B'),
+                Model('OpenGVLab/InternVL3-38B', 'OpenGVLab/InternVL3-38B'),
+                Model('OpenGVLab/InternVL3-78B', 'OpenGVLab/InternVL3-78B'),
+            ]),
+            # awq (Use lmdeploy for inference.)
+            ModelGroup([
+                Model('OpenGVLab/InternVL3-1B-AWQ', 'OpenGVLab/InternVL3-1B-AWQ'),
+                Model('OpenGVLab/InternVL3-2B-AWQ', 'OpenGVLab/InternVL3-2B-AWQ'),
+                Model('OpenGVLab/InternVL3-8B-AWQ', 'OpenGVLab/InternVL3-8B-AWQ'),
+                Model('OpenGVLab/InternVL3-9B-AWQ', 'OpenGVLab/InternVL3-9B-AWQ'),
+                Model('OpenGVLab/InternVL3-14B-AWQ', 'OpenGVLab/InternVL3-14B-AWQ'),
+                Model('OpenGVLab/InternVL3-38B-AWQ', 'OpenGVLab/InternVL3-38B-AWQ'),
+                Model('OpenGVLab/InternVL3-78B-AWQ', 'OpenGVLab/InternVL3-78B-AWQ'),
+            ]),
+        ],
+        TemplateType.internvl2_5,
+        get_model_tokenizer_internvl,
+        architectures=['InternVLChatModel'],
+        model_arch=ModelArch.internvl,
+        requires=['transformers>=4.37.2', 'timm'],
         tags=['vision', 'video'],
     ))
 

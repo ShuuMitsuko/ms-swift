@@ -91,10 +91,8 @@ class PtEngine(InferEngine):
         self._task_thread = None
 
     def _start_infer_worker(self):
-        if self._task_thread is None:
-            self._task_thread = Thread(target=self._infer_worker)
-            self._task_thread.daemon = True
-            self._task_thread.start()
+        self._task_thread = Thread(target=self._infer_worker, daemon=True)
+        self._task_thread.start()
 
     def _fetch_infer_requests(self):
         while not self._queue.empty():
@@ -170,7 +168,8 @@ class PtEngine(InferEngine):
 
     @staticmethod
     def preprocess_logits(batched_logits: Optional[List[torch.Tensor]], batched_generate_ids: torch.Tensor,
-                          top_logprobs: int):
+                          top_logprobs: Optional[int]):
+        top_logprobs = top_logprobs or 1
         batch_size = batched_generate_ids.shape[0]
         if batched_logits is None:
             return None
@@ -258,7 +257,7 @@ class PtEngine(InferEngine):
 
             batched_generate_ids = template.get_generate_ids(raw_batched_generate_ids, num_prompt_tokens)
             self._update_batched_logprobs(batched_logprobs, logits_streamer, batched_generate_ids,
-                                          generation_config.top_logprobs or 1)
+                                          generation_config.top_logprobs)
 
             res = []
             for i in range(batched_generate_ids.shape[0]):
@@ -288,7 +287,7 @@ class PtEngine(InferEngine):
                 usage_info = self._get_usage_info(num_prompt_tokens, len(generate_ids))
                 toolcall = None
                 if is_finished[i]:
-                    toolcall = self._get_toolcall(template.decode(generate_ids), template.tools_prompt)
+                    toolcall = self._get_toolcall(template.decode(generate_ids), template)
                 finish_reason = self._get_finish_reason(generation_config.max_new_tokens, num_prompt_tokens,
                                                         is_finished[i])
 
@@ -322,6 +321,7 @@ class PtEngine(InferEngine):
                        adapter_request: Optional[AdapterRequest] = None,
                        **kwargs):
         call_kwargs = {}
+        top_logprobs = getattr(kwargs.get('generation_config'), 'top_logprobs', None) or 20
         adapter_names = self._get_adapter_names(adapter_request)
         if adapter_names is not None:
             call_kwargs['adapter_names'] = adapter_names
@@ -329,7 +329,7 @@ class PtEngine(InferEngine):
         inputs.pop('labels', None)
         logits = self.model(**inputs, **call_kwargs).logits
         if template.mode == 'seq_cls':
-            preds, logprobs = template.decode_seq_cls(logits)
+            preds, logprobs = template.decode_seq_cls(logits, top_logprobs)
         elif template.mode == 'prm':
             preds = template.decode_prm(inputs['input_ids'], logits)
             logprobs = [None] * len(preds)
@@ -342,7 +342,7 @@ class PtEngine(InferEngine):
             choices = [
                 ChatCompletionResponseChoice(
                     index=0,
-                    message=ChatMessage(role='assistant', content=str(pred), tool_calls=None),
+                    message=ChatMessage(role='assistant', content=pred, tool_calls=None),
                     finish_reason='stop',
                     logprobs=logprobs[i])
             ]
@@ -393,7 +393,7 @@ class PtEngine(InferEngine):
                 usage_info = self._update_usage_info(usage_info, len(generate_ids))
                 response = template.decode(generate_ids, template_inputs=template_inputs[i])
                 finish_reason = self._get_finish_reason(generation_config.max_new_tokens, num_prompt_tokens, True)
-                toolcall = self._get_toolcall(response, template.tools_prompt)
+                toolcall = self._get_toolcall(response, template)
                 choices.append(
                     ChatCompletionResponseChoice(
                         index=j,
@@ -422,7 +422,8 @@ class PtEngine(InferEngine):
             'pre_infer_hook': pre_infer_hook
         }, (queue, asyncio.get_event_loop())))
         await asyncio.sleep(0)
-        self._start_infer_worker()
+        if self._task_thread is None:
+            self._start_infer_worker()
         if request_config.stream:
 
             async def _gen_wrapper():
@@ -477,6 +478,8 @@ class PtEngine(InferEngine):
                 self.set_default_max_tokens(request_config, inputs)
                 generation_config = self._prepare_generation_config(request_config)
                 self._add_stop_words(generation_config, request_config, template.template_meta)
+            else:
+                generation_config = request_config
 
             kwargs = {
                 'template': template,

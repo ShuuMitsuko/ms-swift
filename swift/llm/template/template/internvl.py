@@ -54,6 +54,15 @@ class InternvlTemplate(Template):
         encoded['pixel_values'] = pixel_values
         return encoded
 
+    def compute_loss_context(self, model, inputs):
+        model_name = model.language_model.__class__.__name__.lower()
+        if self._packing and 'internlm2' in model_name:
+            position_ids = inputs['position_ids']
+            modeling_module = model.language_model.model.layers[0].attention.__class__
+            return self._patch_flash_attention_forward(modeling_module, position_ids, use_new_func=True)
+        else:
+            return super().compute_loss_context(model, inputs)
+
     def _post_encode(self, model: nn.Module, inputs: Dict[str, Any]) -> Dict[str, Any]:
         embedding = model.get_input_embeddings()
         device = embedding.weight.device
@@ -120,23 +129,19 @@ class Internvl2Template(InternvlTemplate):
                 max_num = video_max_num
             pixel_values = [transform_image(image, input_size, max_num) for image in images]
             num_patches = [pv.shape[0] for pv in pixel_values]
-            pixel_values = torch.cat(pixel_values).to(self.config.torch_dtype)
+            pixel_values = torch.cat(pixel_values).to(self.model_info.torch_dtype)
         else:
             pixel_values = None
             num_patches = []
         assert len(num_patches) == len(
             idx_list), f'len(num_patches): {len(num_patches)}, len(idx_list): {len(idx_list)}'
-        added_tokens_len = 0
-        for idx, num_patch in zip(idx_list, num_patches):
+
+        def _get_new_tokens(i):
             img_tokens: List[int] = self.processor.encode(
-                '<IMG_CONTEXT>', add_special_tokens=False) * self.num_image_token * num_patch
-            input_ids = input_ids[:idx + added_tokens_len] + img_tokens + input_ids[idx + added_tokens_len + 1:]
-            if labels is not None:
-                labels = labels[:idx + added_tokens_len] + [-100] * len(img_tokens) + labels[idx + added_tokens_len
-                                                                                             + 1:]
-            added_tokens_len += len(img_tokens) - 1
-        encoded['input_ids'] = input_ids
-        encoded['labels'] = labels
+                '<IMG_CONTEXT>', add_special_tokens=False) * self.num_image_token * num_patches[i]
+            return img_tokens
+
+        encoded['input_ids'], encoded['labels'] = self._extend_tokens(input_ids, labels, idx_list, _get_new_tokens)
         encoded['pixel_values'] = pixel_values
         return encoded
 
